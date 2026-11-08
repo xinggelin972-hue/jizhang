@@ -1,4 +1,4 @@
-const CACHE = 'ledger-v1';
+const CACHE = 'ledger-v2';
 const ASSETS = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -11,14 +11,31 @@ self.addEventListener('activate', e => {
     .then(() => self.clients.claim()));
 });
 
+// 页面本身：先走网络，拿新版；断网再回退缓存
+function networkFirst(req) {
+  return fetch(req).then(res => {
+    const copy = res.clone();
+    caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
+    return res;
+  }).catch(() => caches.match(req, { ignoreSearch: true })
+               .then(hit => hit || caches.match('index.html')));
+}
+
+// 图标等静态资源：先用缓存，同时在后台更新
+function staleWhileRevalidate(req) {
+  return caches.match(req, { ignoreSearch: true }).then(hit => {
+    const refresh = fetch(req).then(res => {
+      const copy = res.clone();
+      caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
+      return res;
+    }).catch(() => hit);
+    return hit || refresh;
+  });
+}
+
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
-  e.respondWith(
-    caches.match(e.request, { ignoreSearch: true })
-      .then(hit => hit || fetch(e.request).then(res => {
-        const copy = res.clone();
-        caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
-        return res;
-      }).catch(() => caches.match('index.html')))
-  );
+  const req = e.request;
+  if (req.mode === 'navigate') return e.respondWith(networkFirst(req));
+  e.respondWith(staleWhileRevalidate(req));
 });
