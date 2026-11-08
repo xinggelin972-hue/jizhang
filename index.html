@@ -117,8 +117,19 @@ const todayStr = () => {
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
 };
 const money = v => '¥' + v.toLocaleString('zh-CN', {minimumFractionDigits:2, maximumFractionDigits:2});
-const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } };
-const save = rows => localStorage.setItem(KEY, JSON.stringify(rows));
+// 存储适配：装成 App 时走原生桥（SharedPreferences），网页里用 localStorage
+const IN_APP = typeof window.AndroidStore !== 'undefined';
+const load = () => {
+  try {
+    if (IN_APP) { const s = AndroidStore.get('ledger'); return s ? JSON.parse(s) : []; }
+    return JSON.parse(localStorage.getItem(KEY)) || [];
+  } catch { return []; }
+};
+const save = rows => {
+  const s = JSON.stringify(rows);
+  if (IN_APP) { try { AndroidStore.set('ledger', s); return; } catch (e) {} }
+  localStorage.setItem(KEY, s);
+};
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
 let rows = load();
@@ -212,7 +223,9 @@ function toast(msg) {
 }
 
 $('export').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify({ version: 1, rows }, null, 2)], { type: 'application/json' });
+  const json = JSON.stringify({ version: 1, rows }, null, 2);
+  if (IN_APP) { AndroidStore.copy(json); toast('备份已复制到剪贴板'); return; }
+  const blob = new Blob([json], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `记账备份-${todayStr()}.json`;
@@ -220,18 +233,27 @@ $('export').addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   toast('已导出');
 });
-$('import').addEventListener('click', () => $('file').click());
-$('file').addEventListener('change', async e => {
-  const f = e.target.files[0]; if (!f) return;
+
+function applyImport(text) {
   try {
-    const data = JSON.parse(await f.text());
+    const data = JSON.parse(text);
     const add = (data.rows || data).filter(r => r && r.amount > 0).map(r => ({
-      id: r.id || uid(), date: r.date, amount: Number(r.amount), cat: r.cat || '其他', note: r.note || ''
+      id: r.id || uid(), date: r.date, amount: Number(r.amount), cat: r.cat || r.category || '其他', note: r.note || ''
     }));
-    if (!add.length) return toast('文件里没有记录');
+    if (!add.length) return toast('里面没有记录');
     if (!confirm(`导入 ${add.length} 笔？会追加到现有记录后面。`)) return;
     rows = rows.concat(add); save(rows); render(); toast(`导入 ${add.length} 笔`);
-  } catch { toast('这个文件读不了'); }
+  } catch { toast('这段内容读不了'); }
+}
+
+$('import').addEventListener('click', () => {
+  if (!IN_APP) return $('file').click();
+  const text = prompt('粘贴备份 JSON：');
+  if (text) applyImport(text);
+});
+$('file').addEventListener('change', async e => {
+  const f = e.target.files[0]; if (!f) return;
+  applyImport(await f.text());
   e.target.value = '';
 });
 $('clear').addEventListener('click', () => {
